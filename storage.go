@@ -3,6 +3,8 @@ package bolt
 import (
 	"fmt"
 	"net/url"
+	"os"
+	"time"
 
 	"go.etcd.io/bbolt"
 )
@@ -11,23 +13,66 @@ var (
 	bucketRequests = []byte("requests")
 	bucketCookies  = []byte("cookies")
 	bucketQueue    = []byte("queue")
+
+	ErrEmptyQueue = fmt.Errorf("queue is empty")
 )
 
 // Storage is a implementation for colly/queue and colly/storage
 type Storage struct {
-	db *bbolt.DB
+	db      *bbolt.DB
+	mode    os.FileMode
+	options *bbolt.Options
+	debug   Logger
 }
 
-func NewStorage(path string) (*Storage, error) {
-	db, err := bbolt.Open(path, 0666, nil)
+type Logger func(...interface{})
+
+type Option func(*Storage) error
+
+func Timeout(t time.Duration) Option {
+	return func(s *Storage) error {
+		s.options.Timeout = t
+		return nil
+	}
+}
+
+func Mode(m os.FileMode) Option {
+	return func(s *Storage) error {
+		s.mode = m
+		return nil
+	}
+}
+
+func Debug(l Logger) Option {
+	return func(s *Storage) error {
+		s.debug = l
+		return nil
+	}
+}
+
+func NewStorage(path string, opts ...Option) (*Storage, error) {
+	out := &Storage{
+		options: bbolt.DefaultOptions,
+		mode:    0666,
+		debug:   func(v ...interface{}) {},
+	}
+	for _, o := range opts {
+		if err := o(out); err != nil {
+			return nil, err
+		}
+	}
+	var err error
+	out.debug("bolt: using file", path, "mode", out.mode)
+	out.db, err = bbolt.Open(path, out.mode, out.options)
 	if err != nil {
 		return nil, err
 	}
-	return &Storage{db: db}, nil
+	return out, nil
 }
 
 func (s *Storage) Init() error {
 	return s.db.Update(func(tx *bbolt.Tx) error {
+		s.debug("bolt: creating buckets")
 		for _, b := range [][]byte{
 			bucketRequests,
 			bucketCookies,
@@ -72,7 +117,7 @@ func (s *Storage) SetCookies(u *url.URL, cookies string) {
 }
 
 func (s *Storage) AddRequest(request []byte) error {
-	err := s.db.Update(func(tx *bbolt.Tx) error {
+	return s.db.Update(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(bucketQueue)
 		n, err := bucket.NextSequence()
 		if err != nil {
@@ -80,18 +125,16 @@ func (s *Storage) AddRequest(request []byte) error {
 		}
 		return bucket.Put(u64ToBytes(n), request)
 	})
-	return err
 }
 
 func (s *Storage) GetRequest() ([]byte, error) {
 	var request []byte
 	err := s.db.Update(func(tx *bbolt.Tx) error {
-		queueBucket := tx.Bucket(bucketQueue)
-		if queueBucket.Stats().KeyN == 0 {
-			return fmt.Errorf("the queue is empty")
-		}
-		c := queueBucket.Cursor()
+		c := tx.Bucket(bucketQueue).Cursor()
 		_, request = c.First()
+		if request == nil {
+			return ErrEmptyQueue
+		}
 		return c.Delete()
 	})
 	return request, err
