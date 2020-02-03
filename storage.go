@@ -14,6 +14,7 @@ var (
 	bucketCookies  = []byte("cookies")
 	bucketQueue    = []byte("queue")
 
+	// ErrEmptyQueue is returned when an URL is requested from an empty queue.
 	ErrEmptyQueue = fmt.Errorf("queue is empty")
 )
 
@@ -25,10 +26,13 @@ type Storage struct {
 	debug   Logger
 }
 
+// Logger is the interface used for debug logging.
 type Logger func(...interface{})
 
+// Option enables configuration of the storage.
 type Option func(*Storage) error
 
+// Timeout sets the underlying BoltDB timeout.
 func Timeout(t time.Duration) Option {
 	return func(s *Storage) error {
 		s.options.Timeout = t
@@ -36,6 +40,7 @@ func Timeout(t time.Duration) Option {
 	}
 }
 
+// Mode determines the file creation mode. It defaults to 0666.
 func Mode(m os.FileMode) Option {
 	return func(s *Storage) error {
 		s.mode = m
@@ -43,6 +48,7 @@ func Mode(m os.FileMode) Option {
 	}
 }
 
+// Debug sets a Logger for the storage.
 func Debug(l Logger) Option {
 	return func(s *Storage) error {
 		s.debug = l
@@ -50,7 +56,9 @@ func Debug(l Logger) Option {
 	}
 }
 
-func NewStorage(path string, opts ...Option) (*Storage, error) {
+// New creates a new storage implementation for Colly.
+// A database will be created at the provided path if it does not already exist.
+func New(path string, opts ...Option) (*Storage, error) {
 	out := &Storage{
 		options: bbolt.DefaultOptions,
 		mode:    0666,
@@ -70,6 +78,12 @@ func NewStorage(path string, opts ...Option) (*Storage, error) {
 	return out, nil
 }
 
+// Close ensures the database is left in a valid state.
+func (s *Storage) Close() error {
+	return s.db.Close()
+}
+
+// Init implements the colly.Storage interface.
 func (s *Storage) Init() error {
 	return s.db.Update(func(tx *bbolt.Tx) error {
 		s.debug("bolt: creating buckets")
@@ -86,12 +100,14 @@ func (s *Storage) Init() error {
 	})
 }
 
+// Visited implements the colly.Storage interface.
 func (s *Storage) Visited(id uint64) error {
 	return s.db.Update(func(tx *bbolt.Tx) error {
 		return tx.Bucket(bucketRequests).Put(u64ToBytes(id), []byte{})
 	})
 }
 
+// IsVisited implements the colly.Storage interface.
 func (s *Storage) IsVisited(id uint64) (bool, error) {
 	var isVisited bool
 	err := s.db.View(func(tx *bbolt.Tx) error {
@@ -101,6 +117,7 @@ func (s *Storage) IsVisited(id uint64) (bool, error) {
 	return isVisited, err
 }
 
+// Cookies implements the colly.Storage interface.
 func (s *Storage) Cookies(u *url.URL) string {
 	var cookies string
 	s.db.View(func(tx *bbolt.Tx) error {
@@ -110,12 +127,14 @@ func (s *Storage) Cookies(u *url.URL) string {
 	return cookies
 }
 
+// SetCookies implements the colly.Storage interface.
 func (s *Storage) SetCookies(u *url.URL, cookies string) {
 	s.db.Update(func(tx *bbolt.Tx) error {
 		return tx.Bucket(bucketCookies).Put([]byte(u.String()), []byte(cookies))
 	})
 }
 
+// AddRequest implements the colly.Storage interface.
 func (s *Storage) AddRequest(request []byte) error {
 	return s.db.Update(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(bucketQueue)
@@ -127,6 +146,7 @@ func (s *Storage) AddRequest(request []byte) error {
 	})
 }
 
+// GetRequest implements the colly.Storage interface.
 func (s *Storage) GetRequest() ([]byte, error) {
 	var request []byte
 	err := s.db.Update(func(tx *bbolt.Tx) error {
@@ -140,6 +160,7 @@ func (s *Storage) GetRequest() ([]byte, error) {
 	return request, err
 }
 
+// QueueSize implements the colly.Queue interface.
 func (s *Storage) QueueSize() (int, error) {
 	var queueSize int
 	err := s.db.View(func(tx *bbolt.Tx) error {
