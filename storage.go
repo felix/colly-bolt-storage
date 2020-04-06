@@ -1,6 +1,7 @@
 package bolt
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"net/url"
 	"os"
@@ -20,10 +21,12 @@ var (
 
 // Storage is a implementation for colly/queue and colly/storage
 type Storage struct {
-	db      *bbolt.DB
-	mode    os.FileMode
-	options *bbolt.Options
-	debug   Logger
+	db        *bbolt.DB
+	mode      os.FileMode
+	unique    bool
+	noHistory *bool
+	options   *bbolt.Options
+	debug     Logger
 }
 
 // Logger is the interface used for debug logging.
@@ -36,6 +39,24 @@ type Option func(*Storage) error
 func Timeout(t time.Duration) Option {
 	return func(s *Storage) error {
 		s.options.Timeout = t
+		return nil
+	}
+}
+
+// Unique ensures unique entries.
+func Unique() Option {
+	return func(s *Storage) error {
+		s.unique = true
+		return nil
+	}
+}
+
+// NoHistory configures the storage to not store history. The bool parameter is
+// default response when Colly asks "isVisited". Use this for cases where you
+// track the visited state externally.
+func NoHistory(def bool) Option {
+	return func(s *Storage) error {
+		s.noHistory = &def
 		return nil
 	}
 }
@@ -102,6 +123,9 @@ func (s *Storage) Init() error {
 
 // Visited implements the colly.Storage interface.
 func (s *Storage) Visited(id uint64) error {
+	if s.noHistory != nil {
+		return nil
+	}
 	return s.db.Update(func(tx *bbolt.Tx) error {
 		return tx.Bucket(bucketRequests).Put(u64ToBytes(id), []byte{})
 	})
@@ -110,6 +134,9 @@ func (s *Storage) Visited(id uint64) error {
 // IsVisited implements the colly.Storage interface.
 func (s *Storage) IsVisited(id uint64) (bool, error) {
 	var isVisited bool
+	if s.noHistory != nil {
+		return *s.noHistory, nil
+	}
 	err := s.db.View(func(tx *bbolt.Tx) error {
 		isVisited = tx.Bucket(bucketRequests).Get(u64ToBytes(id)) != nil
 		return nil
@@ -138,6 +165,14 @@ func (s *Storage) SetCookies(u *url.URL, cookies string) {
 func (s *Storage) AddRequest(request []byte) error {
 	return s.db.Update(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(bucketQueue)
+		if s.unique {
+			key := sha256.Sum256(request)
+			if bucket.Get(key[:]) == nil {
+				return bucket.Put(key[:], request)
+			}
+			return nil
+		}
+
 		n, err := bucket.NextSequence()
 		if err != nil {
 			return err
